@@ -19,14 +19,13 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-# Change these hex values to adjust chart colors globally.
-# Current palette is Spotify-leaning greens.
+
 PALETTE = [
-    "#1DB954",  # Spotify green
-    "#15883e",  # darker green
-    "#1ed760",  # bright green
-    "#0f6d33",  # forest green
-    "#2ac85d",  # medium green
+    "#1DB954",  
+    "#15883e",  
+    "#1ed760",  
+    "#0f6d33",  
+    "#2ac85d", 
 ]
 
 
