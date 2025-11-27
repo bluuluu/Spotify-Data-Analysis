@@ -3,6 +3,8 @@ Spotify Data Analysis script.
 
 Run as:
     python spotify_analysis.py --tracks path/to/tracks.csv --features path/to/SpotifyFeatures.csv
+or if you only have artists data:
+    python spotify_analysis.py --artists path/to/artists.csv
 
 Outputs cleaned CSVs to ./output and shows plots.
 Requires: pandas, numpy, matplotlib, seaborn
@@ -17,6 +19,16 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
+# Change these hex values to adjust chart colors globally.
+# Current palette is Spotify-leaning greens.
+PALETTE = [
+    "#1DB954",  # Spotify green
+    "#15883e",  # darker green
+    "#1ed760",  # bright green
+    "#0f6d33",  # forest green
+    "#2ac85d",  # medium green
+]
+
 
 def load_csv(path: str) -> pd.DataFrame:
     """Load a CSV file with basic error handling."""
@@ -30,6 +42,9 @@ def load_csv(path: str) -> pd.DataFrame:
 def quick_overview(df: pd.DataFrame, name: str) -> None:
     """Print head/info/NA counts/describe to understand the dataset quickly."""
     print(f"\n--- Overview: {name} ---")
+    if df.empty:
+        print("DataFrame is empty.")
+        return
     print("Head:")
     print(df.head(5).to_string(index=False))
     print("\nInfo:")
@@ -64,24 +79,43 @@ def genre_column(features: pd.DataFrame) -> Optional[str]:
     return None
 
 
-def main(tracks_path: str, features_path: str) -> None:
+def main(tracks_path: Optional[str], features_path: Optional[str], artists_path: Optional[str]) -> None:
     sns.set_style("darkgrid")
+    sns.set_palette(PALETTE)
     plt.rcParams["figure.figsize"] = (10, 5)
 
-    try:
-        tracks = load_csv(tracks_path)
-    except FileNotFoundError as exc:
-        print(exc)
-        return
+    tracks = pd.DataFrame()
+    features = pd.DataFrame()
+    artists = pd.DataFrame()
 
-    try:
-        features = load_csv(features_path)
-    except FileNotFoundError as exc:
-        print(exc)
+    if tracks_path:
+        try:
+            tracks = load_csv(tracks_path)
+        except FileNotFoundError as exc:
+            print(exc)
+            return
+
+    if features_path:
+        try:
+            features = load_csv(features_path)
+        except FileNotFoundError as exc:
+            print(exc)
+            return
+
+    if artists_path:
+        try:
+            artists = load_csv(artists_path)
+        except FileNotFoundError as exc:
+            print(exc)
+            return
+
+    if all(df.empty for df in (tracks, features, artists)):
+        print("No data loaded. Provide at least one CSV via --tracks, --features, or --artists.")
         return
 
     quick_overview(tracks, "tracks")
     quick_overview(features, "features")
+    quick_overview(artists, "artists")
 
     if "duration_ms" in tracks.columns:
         tracks["duration_sec"] = ms_to_seconds(tracks["duration_ms"])
@@ -92,16 +126,23 @@ def main(tracks_path: str, features_path: str) -> None:
         print("Converted duration_ms to duration_sec in features.")
 
     # Drop duplicates and strip column names for consistency.
-    before = len(tracks)
-    tracks = tracks.drop_duplicates()
-    print(f"Dropped {before - len(tracks)} duplicate rows from tracks.")
+    if not tracks.empty:
+        before = len(tracks)
+        tracks = tracks.drop_duplicates()
+        print(f"Dropped {before - len(tracks)} duplicate rows from tracks.")
+        tracks.columns = [c.strip() for c in tracks.columns]
 
-    before = len(features)
-    features = features.drop_duplicates()
-    print(f"Dropped {before - len(features)} duplicate rows from features.")
+    if not features.empty:
+        before = len(features)
+        features = features.drop_duplicates()
+        print(f"Dropped {before - len(features)} duplicate rows from features.")
+        features.columns = [c.strip() for c in features.columns]
 
-    tracks.columns = [c.strip() for c in tracks.columns]
-    features.columns = [c.strip() for c in features.columns]
+    if not artists.empty:
+        before = len(artists)
+        artists = artists.drop_duplicates()
+        print(f"Dropped {before - len(artists)} duplicate rows from artists.")
+        artists.columns = [c.strip() for c in artists.columns]
 
     # Work with dates and extract year.
     if "release_date" in tracks.columns:
@@ -126,7 +167,7 @@ def main(tracks_path: str, features_path: str) -> None:
         merge_on = ["name", "artists"]
 
     merged = None
-    if merge_on:
+    if merge_on and not tracks.empty and not features.empty:
         merged = pd.merge(
             tracks.reset_index(),
             features.reset_index(),
@@ -135,27 +176,31 @@ def main(tracks_path: str, features_path: str) -> None:
             suffixes=("_tracks", "_features"),
         )
         print(f"Merged DataFrame shape: {merged.shape}")
+    elif tracks.empty or features.empty:
+        print("Skipping merge (tracks or features missing).")
     else:
         print("No reliable merge key found; skipping merge.")
 
     # Popularity extremes.
     pop_src = None
-    for df in (tracks, features, merged):
-        if df is not None and "popularity" in df.columns:
+    for df in (tracks, features, artists, merged):
+        if df is not None and not df.empty and "popularity" in df.columns:
             pop_src = df
             break
 
     if pop_src is not None:
         pop_table = pop_src.reset_index()
-        print("\nTop 10 most popular songs:")
-        print(pop_table.sort_values("popularity", ascending=False)[["name", "artists", "popularity"]].head(10).to_string(index=False))
-        print("\nTop 10 least popular songs:")
-        print(pop_table.sort_values("popularity", ascending=True)[["name", "artists", "popularity"]].head(10).to_string(index=False))
+        cols_to_show = [c for c in ("name", "artists", "popularity") if c in pop_table.columns]
+        print("\nTop 10 most popular entries:")
+        print(pop_table.sort_values("popularity", ascending=False)[cols_to_show].head(10).to_string(index=False))
+        print("\nTop 10 least popular entries:")
+        print(pop_table.sort_values("popularity", ascending=True)[cols_to_show].head(10).to_string(index=False))
     else:
         print("No 'popularity' column found in any dataset.")
 
     # Correlation heatmap on numeric columns.
-    corr_src = merged if merged is not None and not merged.empty else tracks
+    corr_candidates = [df for df in (merged, tracks, features, artists) if df is not None and not df.empty]
+    corr_src = corr_candidates[0] if corr_candidates else pd.DataFrame()
     corr_df = corr_src.select_dtypes(include=[np.number])
     if corr_df.shape[1] >= 2:
         plt.figure(figsize=(12, 8))
@@ -169,22 +214,23 @@ def main(tracks_path: str, features_path: str) -> None:
         print("Not enough numeric columns for correlation matrix.")
 
     # Regression plots using a sample to avoid overplotting.
-    if len(corr_src) > 2000:
-        sample = corr_src.sample(frac=0.02, random_state=42)
-    else:
-        sample = corr_src.copy()
+    if not corr_src.empty:
+        if len(corr_src) > 2000:
+            sample = corr_src.sample(frac=0.02, random_state=42)
+        else:
+            sample = corr_src.copy()
 
-    if {"energy", "loudness"}.issubset(sample.columns):
-        plt.figure(figsize=(8, 5))
-        sns.regplot(data=sample, x="energy", y="loudness")
-        plt.title("Loudness vs Energy")
-        plt.show()
+        if {"energy", "loudness"}.issubset(sample.columns):
+            plt.figure(figsize=(8, 5))
+            sns.regplot(data=sample, x="energy", y="loudness")
+            plt.title("Loudness vs Energy")
+            plt.show()
 
-    if {"acousticness", "popularity"}.issubset(sample.columns):
-        plt.figure(figsize=(8, 5))
-        sns.regplot(data=sample, x="acousticness", y="popularity")
-        plt.title("Popularity vs Acousticness")
-        plt.show()
+        if {"acousticness", "popularity"}.issubset(sample.columns):
+            plt.figure(figsize=(8, 5))
+            sns.regplot(data=sample, x="acousticness", y="popularity")
+            plt.title("Popularity vs Acousticness")
+            plt.show()
 
     # Yearly trends.
     if "year" in tracks.columns:
@@ -210,9 +256,10 @@ def main(tracks_path: str, features_path: str) -> None:
             plt.show()
 
     # Genre analysis.
-    genre_col = genre_column(features)
+    genre_src = features if not features.empty else artists
+    genre_col = genre_column(genre_src) if not genre_src.empty else None
     if genre_col:
-        genre_series = features[genre_col].dropna().astype(str)
+        genre_series = genre_src[genre_col].dropna().astype(str)
         delimiter = None
         if genre_series.str.contains(";").any():
             delimiter = ";"
@@ -238,13 +285,13 @@ def main(tracks_path: str, features_path: str) -> None:
         plt.tight_layout()
         plt.show()
 
-        if "popularity" in features.columns:
+        if "popularity" in genre_src.columns:
             if delimiter:
-                genre_pop_df = features[[genre_col, "popularity"]].dropna()
+                genre_pop_df = genre_src[[genre_col, "popularity"]].dropna()
                 genre_pop_df = genre_pop_df.assign(**{genre_col: genre_pop_df[genre_col].str.split(delimiter)}).explode(genre_col)
                 genre_pop_df[genre_col] = genre_pop_df[genre_col].str.strip()
             else:
-                genre_pop_df = features[[genre_col, "popularity"]].copy()
+                genre_pop_df = genre_src[[genre_col, "popularity"]].copy()
                 genre_pop_df[genre_col] = genre_pop_df[genre_col].astype(str)
 
             avg_pop = genre_pop_df.groupby(genre_col)["popularity"].mean().sort_values(ascending=False).head(15)
@@ -266,7 +313,7 @@ def main(tracks_path: str, features_path: str) -> None:
         plt.ylabel("Count")
         plt.show()
 
-    if "energy" in corr_src.columns:
+    if not corr_src.empty and "energy" in corr_src.columns:
         plt.figure(figsize=(8, 5))
         sns.histplot(corr_src["energy"].dropna(), bins=30, kde=True)
         plt.title("Energy Distribution")
@@ -276,8 +323,12 @@ def main(tracks_path: str, features_path: str) -> None:
     # Save cleaned/merged outputs.
     out_dir = "output"
     os.makedirs(out_dir, exist_ok=True)
-    tracks.reset_index().to_csv(os.path.join(out_dir, "tracks_cleaned.csv"), index=False)
-    features.reset_index().to_csv(os.path.join(out_dir, "features_cleaned.csv"), index=False)
+    if not tracks.empty:
+        tracks.reset_index().to_csv(os.path.join(out_dir, "tracks_cleaned.csv"), index=False)
+    if not features.empty:
+        features.reset_index().to_csv(os.path.join(out_dir, "features_cleaned.csv"), index=False)
+    if not artists.empty:
+        artists.reset_index().to_csv(os.path.join(out_dir, "artists_cleaned.csv"), index=False)
     if merged is not None:
         merged.to_csv(os.path.join(out_dir, "merged_tracks_features.csv"), index=False)
     print(f"\nSaved cleaned CSVs to {out_dir}/")
@@ -287,7 +338,12 @@ def main(tracks_path: str, features_path: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Spotify Data Analysis")
-    parser.add_argument("--tracks", required=True, help="Path to tracks CSV (includes popularity, release_date, etc.)")
-    parser.add_argument("--features", required=True, help="Path to SpotifyFeatures CSV (audio features + genre)")
+    parser.add_argument("--tracks", help="Path to tracks CSV (includes popularity, release_date, etc.)")
+    parser.add_argument("--features", help="Path to SpotifyFeatures CSV (audio features + genre)")
+    parser.add_argument("--artists", help="Path to artists CSV (id, followers, genres, name, popularity)")
     args = parser.parse_args()
-    main(args.tracks, args.features)
+
+    if not any((args.tracks, args.features, args.artists)):
+        parser.error("Provide at least one dataset path: --tracks, --features, or --artists")
+
+    main(args.tracks, args.features, args.artists)
